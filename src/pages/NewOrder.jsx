@@ -1,245 +1,359 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { model } from '../lib/geminiClient';
 import { supabase } from '../lib/supabaseClient';
 import { generateLabel } from '../lib/pdfGenerator';
-import { UploadCloud, Loader2, Printer, CheckCircle, ArrowLeft, AlertTriangle, UserCheck } from 'lucide-react';
+import { UploadCloud, Loader2, Printer, ArrowLeft, AlertTriangle, UserCheck, Combine, Square, CheckSquare, MapPin } from 'lucide-react';
 
 export default function NewOrder({ session, setView }) {
-  const [image, setImage] = useState(null);
-  const [preview, setPreview] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [step, setStep] = useState(1);
-  
-  // New: RTO / Customer History State
-  const [customerHistory, setCustomerHistory] = useState({ exists: false, total_orders: 0, bad_orders: 0 });
+  const [queue, setQueue] = useState([]); 
+  const [selectedIndex, setSelectedIndex] = useState(null); 
+  const [selectedIds, setSelectedIds] = useState([]); 
+  const [pincodeLoading, setPincodeLoading] = useState(false);
 
-  const [formData, setFormData] = useState({
-    customer_name: '',
-    phone: '',
-    address: '',
-    city: '',
-    pincode: '',
-    amount: '',
-    items: '' // New Field: What did they buy?
-  });
+  // 1. Handle Upload
+  const handleBatchUpload = async (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
 
-  // Function to check Customer History (RTO Guard)
-  const checkCustomerHistory = async (phone) => {
-    if (!phone || phone.length < 10) return;
+    const newItems = files.map(file => ({
+      id: Math.random().toString(36).substr(2, 9),
+      files: [file],
+      previews: [URL.createObjectURL(file)],
+      status: 'pending', 
+      rto_data: null,
+      data: { customer_name: '', phone: '', address: '', city: '', pincode: '', amount: '', items: '' }
+    }));
+
+    setQueue(prev => [...prev, ...newItems]);
+  };
+
+  // 2. Merge Function
+  const handleMerge = () => {
+    if (selectedIds.length < 2) return;
+    const itemsToMerge = queue.filter(item => selectedIds.includes(item.id));
     
-    // Search for this phone number in past orders
-    const { data, error } = await supabase
-      .from('orders')
-      .select('status')
-      .eq('phone', phone); // Assuming phone numbers are exact matches
+    const newItem = {
+      id: Math.random().toString(36).substr(2, 9),
+      files: itemsToMerge.flatMap(item => item.files),
+      previews: itemsToMerge.flatMap(item => item.previews),
+      status: 'pending',
+      rto_data: null,
+      data: { customer_name: '', phone: '', address: '', city: '', pincode: '', amount: '', items: '' }
+    };
 
-    if (data && data.length > 0) {
-      // Calculate stats
-      const bad = data.filter(o => o.status === 'returned').length;
-      setCustomerHistory({
-        exists: true,
-        total_orders: data.length,
-        bad_orders: bad
+    setQueue(prev => [newItem, ...prev.filter(item => !selectedIds.includes(item.id))]);
+    setSelectedIds([]);
+    setSelectedIndex(0);
+    processQueueItem(newItem);
+  };
+
+  // 3. AI Processing (Robust Fix)
+  const processQueueItem = async (item) => {
+    try {
+      updateQueueItem(item.id, { status: 'processing' });
+
+      const imageParts = await Promise.all(item.files.map(async (file) => {
+        return new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.readAsDataURL(file);
+          reader.onloadend = () => resolve({
+            inlineData: { data: reader.result.split(',')[1], mimeType: file.type }
+          });
+        });
+      }));
+
+      // Improved Prompt
+      const prompt = `Combine info from images. Extract JSON with these exact keys: customer_name, phone, address, city, pincode, amount (number), items (string). If name is not found, look for "Receiver" or top text. Return empty string if missing.`;
+      
+      const result = await model.generateContent([prompt, ...imageParts]);
+      const text = result.response.text().replace(/```json|```/g, '').trim();
+      const data = JSON.parse(text);
+
+      // 🟢 FIX: Fallback for Customer Name if AI messes up keys
+      const extractedName = data.customer_name || data.name || data.customer || data.receiver || '';
+
+      let rtoInfo = null;
+      if (data.phone && data.phone.length >= 10) {
+        const { data: history } = await supabase.from('orders').select('status').eq('phone', data.phone);
+        if (history && history.length > 0) {
+           const bad = history.filter(o => o.status === 'returned').length;
+           rtoInfo = { bad, total: history.length };
+        }
+      }
+
+      if (data.pincode && String(data.pincode).length === 6) {
+         lookupPincode(data.pincode, item.id);
+      }
+
+      updateQueueItem(item.id, { 
+        status: 'done', 
+        data: {
+          customer_name: extractedName, // Uses the safe extraction
+          phone: data.phone || '',
+          address: data.address || '',
+          city: data.city || '', 
+          pincode: data.pincode || '',
+          amount: data.amount || 0,
+          items: data.items || ''
+        },
+        rto_data: rtoInfo
       });
+
+    } catch (err) {
+      console.error(err);
+      updateQueueItem(item.id, { status: 'error' });
     }
   };
 
-  const handleImageUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+  // 🟢 FIX: Safer State Update (Prevents typing lag/bugs)
+  const updateQueueItem = (id, updates) => {
+    setQueue(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
+  };
 
-    setPreview(URL.createObjectURL(file));
-    setImage(file);
-    setLoading(true);
+  const manualRtoCheck = async (id, phone) => {
+     if (!phone || phone.length < 10) return;
+     const { data: history } = await supabase.from('orders').select('status').eq('phone', phone);
+     if (history && history.length > 0) {
+        const bad = history.filter(o => o.status === 'returned').length;
+        updateQueueItem(id, { rto_data: { bad, total: history.length } });
+     } else {
+        updateQueueItem(id, { rto_data: null });
+     }
+  };
+
+  const lookupPincode = async (pincode, queueId) => {
+    if (!pincode || String(pincode).length !== 6) return;
+    
+    // Only show loading if this item is selected
+    if(selectedIndex !== null && queue[selectedIndex] && queue[selectedIndex].id === queueId) setPincodeLoading(true);
 
     try {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onloadend = async () => {
-        const base64Data = reader.result.split(',')[1];
+      const res = await fetch(`https://api.postalpincode.in/pincode/${pincode}`);
+      const data = await res.json();
 
-        // 🟢 UPGRADED PROMPT: Now extracts 'items' too
-        const prompt = `
-          Extract these details from the screenshot in valid JSON: 
-          customer_name, phone (10 digits only), address, city, pincode, amount (number), 
-          items (string summary of what they bought, e.g., "2x Blue Denim Jeans").
-          If field is missing, return empty string.
-        `;
+      if (data && data[0].Status === "Success") {
+        const city = data[0].PostOffice[0].District;
         
-        const result = await model.generateContent([
-            prompt,
-            { inlineData: { data: base64Data, mimeType: file.type } }
-        ]);
-
-        const response = result.response;
-        const text = response.text();
-        const cleanJson = text.replace(/```json/g, '').replace(/```/g, '').trim();
-        const data = JSON.parse(cleanJson);
-
-        setFormData({
-            customer_name: data.customer_name || '',
-            phone: data.phone || '',
-            address: data.address || '',
-            city: data.city || '',
-            pincode: data.pincode || '',
-            amount: data.amount || 0,
-            items: data.items || ''
-        });
-
-        // Trigger History Check immediately
-        if (data.phone) checkCustomerHistory(data.phone);
-
-        setLoading(false);
-        setStep(2);
-      };
+        // Functional update to avoid stale state
+        setQueue(prev => prev.map(item => {
+          if (item.id === queueId) {
+            return { 
+                ...item, 
+                data: { ...item.data, city: city, pincode: pincode }
+            };
+          }
+          return item;
+        }));
+      }
     } catch (error) {
-      console.error("AI Error:", error);
-      alert("AI Scan failed. Please enter details manually.");
-      setLoading(false);
-      setStep(2);
+      console.error("Pincode API Failed", error);
+    } finally {
+      setPincodeLoading(false);
     }
+  };
+
+  // 🟢 FIX: Handle Form Change properly
+  const handleFormChange = (field, value) => {
+    if (selectedIndex === null) return;
+    const id = queue[selectedIndex].id;
+    
+    // Use functional update to ensure we don't lose other data while typing
+    setQueue(prev => prev.map(item => {
+      if (item.id === id) {
+        return {
+          ...item,
+          data: { ...item.data, [field]: value }
+        };
+      }
+      return item;
+    }));
+
+    if (field === 'phone') manualRtoCheck(id, value);
+    if (field === 'pincode' && value.length === 6) lookupPincode(value, id);
+  };
+
+  const toggleSelection = (id) => {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   };
 
   const handleSaveAndPrint = async () => {
+    const currentItem = queue[selectedIndex];
+    const formData = currentItem.data;
+
     if (!formData.customer_name || !formData.address) {
       alert("Name and Address are required!");
       return;
     }
 
-    setLoading(true);
-    let screenshotPath = null;
-
     try {
-      if (image) {
-        const fileName = `${session.user.id}/${Date.now()}_${image.name.replace(/\s/g, '_')}`;
-        const { error: uploadError } = await supabase.storage.from('receipts').upload(fileName, image);
-        if (!uploadError) screenshotPath = fileName;
-      }
+      const fileName = `${session.user.id}/${Date.now()}_${currentItem.files[0].name.replace(/\s/g, '_')}`;
+      await supabase.storage.from('receipts').upload(fileName, currentItem.files[0]);
 
-      const { error: dbError } = await supabase.from('orders').insert([
-        {
-          user_id: session.user.id,
-          screenshot_url: screenshotPath,
-          ...formData,
-          status: 'pending' 
-        }
-      ]);
+      const { error } = await supabase.from('orders').insert([{
+        user_id: session.user.id,
+        screenshot_url: fileName,
+        ...formData,
+        status: 'pending'
+      }]);
 
-      if (dbError) throw dbError;
-
+      if (error) throw error;
       generateLabel(formData);
-      setStep(3);
+
+      const newQueue = queue.filter((_, i) => i !== selectedIndex);
+      setQueue(newQueue);
+      setSelectedIndex(newQueue.length > 0 ? 0 : null);
+      setSelectedIds([]);
 
     } catch (error) {
-      alert("Error saving order: " + error.message);
-    } finally {
-      setLoading(false);
+      alert("Error: " + error.message);
     }
   };
 
-  const resetForm = () => {
-    setStep(1);
-    setFormData({customer_name: '', phone: '', address: '', city: '', pincode: '', amount: '', items: ''});
-    setImage(null);
-    setPreview(null);
-    setCustomerHistory({ exists: false, total_orders: 0, bad_orders: 0 });
-  };
+  // Safely get current item
+  const currentItem = selectedIndex !== null ? queue[selectedIndex] : null;
 
   return (
-    <div className="max-w-4xl mx-auto p-6">
-      <div className="flex items-center gap-4 mb-6">
-        <button onClick={() => setView('dashboard')} className="p-2 hover:bg-gray-100 rounded-full text-gray-500">
-          <ArrowLeft size={20} />
-        </button>
-        <h1 className="text-2xl font-bold text-gray-900">Create New Label</h1>
+    <div className="max-w-7xl mx-auto p-4 lg:p-6 h-[calc(100vh-80px)]">
+      
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <button onClick={() => setView('dashboard')} className="p-2 hover:bg-gray-100 rounded-full text-gray-500">
+            <ArrowLeft size={20} />
+          </button>
+          <h1 className="text-2xl font-bold text-gray-900">Batch Processor</h1>
+        </div>
+        
+        <div className="flex gap-3">
+          {selectedIds.length > 1 && (
+            <button onClick={handleMerge} className="flex items-center gap-2 bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 animate-in fade-in">
+              <Combine size={18} /> Merge ({selectedIds.length})
+            </button>
+          )}
+          <div className="relative">
+            <input type="file" multiple accept="image/*" onChange={handleBatchUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+            <button className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+              <UploadCloud size={18} /> Upload
+            </button>
+          </div>
+        </div>
       </div>
 
-      {step === 1 && (
-        <div className="border-2 border-dashed border-gray-300 rounded-2xl p-16 text-center hover:bg-blue-50/50 hover:border-blue-400 transition-all relative cursor-pointer group">
-           <input type="file" accept="image/*" onChange={handleImageUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
-            {loading ? (
-                <div className="flex flex-col items-center">
-                    <Loader2 className="animate-spin h-12 w-12 text-blue-600 mb-4" />
-                    <p className="text-gray-500 font-medium">Scanning for Items & Address...</p>
+      <div className="grid grid-cols-12 gap-6 h-full">
+          {/* LEFT SIDEBAR: Queue */}
+          <div className="col-span-12 md:col-span-4 lg:col-span-3 bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden flex flex-col">
+            <div className="p-3 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
+              <span className="font-medium text-gray-500 text-xs uppercase">Queue ({queue.length})</span>
+            </div>
+            
+            <div className="overflow-y-auto flex-1 divide-y divide-gray-100">
+              {queue.map((item, index) => (
+                <div 
+                  key={item.id}
+                  onClick={() => setSelectedIndex(index)}
+                  className={`p-3 flex items-start gap-3 cursor-pointer transition-colors ${selectedIndex === index ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
+                >
+                  <button onClick={(e) => { e.stopPropagation(); toggleSelection(item.id); }} className="mt-1 text-gray-400 hover:text-blue-600">
+                    {selectedIds.includes(item.id) ? <CheckSquare className="text-blue-600" size={20} /> : <Square size={20} />}
+                  </button>
+
+                  <div className="relative h-12 w-12 flex-shrink-0">
+                     <img src={item.previews[0]} className="h-12 w-12 object-cover rounded bg-gray-200" />
+                     {item.files.length > 1 && <span className="absolute -bottom-1 -right-1 bg-purple-600 text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full border-2 border-white">{item.files.length}</span>}
+                  </div>
+
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-sm font-medium truncate ${!item.data.customer_name ? 'text-gray-400 italic' : 'text-gray-900'}`}>
+                      {item.data.customer_name || "New Item"}
+                    </p>
+                    
+                    <div className="flex items-center gap-2 mt-1">
+                        {item.status === 'pending' && <button onClick={(e)=>{e.stopPropagation(); processQueueItem(item)}} className="text-xs bg-gray-200 px-2 py-0.5 rounded text-gray-600">Scan</button>}
+                        {item.status === 'processing' && <span className="text-blue-500 text-xs flex gap-1"><Loader2 size={12} className="animate-spin"/></span>}
+                        
+                        {item.status === 'done' && (
+                            item.rto_data ? (
+                                item.rto_data.bad > 0 ? 
+                                <span className="text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold border border-red-200">HIGH RISK</span> : 
+                                <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold border border-green-200">SAFE</span>
+                            ) : <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded font-bold">NEW</span>
+                        )}
+                    </div>
+                  </div>
                 </div>
+              ))}
+            </div>
+          </div>
+
+          {/* RIGHT SIDE: Editor */}
+          <div className="col-span-12 md:col-span-8 lg:col-span-9 bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden flex flex-col">
+            {currentItem ? (
+              <div className="flex flex-col lg:flex-row h-full">
+                <div className="lg:w-1/2 bg-gray-100 p-4 overflow-y-auto border-r border-gray-200">
+                  <div className="grid grid-cols-1 gap-4">
+                    {currentItem.previews.map((src, i) => (
+                      <div key={i} className="relative"><img src={src} className="w-full rounded-lg shadow-sm" /><span className="absolute top-2 left-2 bg-black/50 text-white text-xs px-2 py-1 rounded">Img {i+1}</span></div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="lg:w-1/2 p-6 overflow-y-auto">
+                  {/* RTO BANNER */}
+                  {currentItem.rto_data && (
+                    <div className={`mb-6 p-3 rounded-lg flex items-center gap-3 ${currentItem.rto_data.bad > 0 ? 'bg-red-50 text-red-700 border-red-200' : 'bg-green-50 text-green-700 border-green-200'}`}>
+                      {currentItem.rto_data.bad > 0 ? <AlertTriangle size={24}/> : <UserCheck size={24}/>}
+                      <div>
+                        <p className="font-bold text-sm">{currentItem.rto_data.bad > 0 ? "⚠️ HIGH RISK CUSTOMER" : "✅ REPEAT CUSTOMER"}</p>
+                        <p className="text-xs">History: {currentItem.rto_data.total} Orders, {currentItem.rto_data.bad} Returns.</p>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-4">
+                    <div><label className="text-xs font-bold text-gray-500 uppercase">Items</label><input className="w-full p-2 border rounded" value={currentItem.data.items} onChange={(e) => handleFormChange('items', e.target.value)} /></div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div><label className="text-xs font-bold text-gray-500 uppercase">Name</label><input className="w-full p-2 border rounded" value={currentItem.data.customer_name} onChange={(e) => handleFormChange('customer_name', e.target.value)} /></div>
+                      <div><label className="text-xs font-bold text-gray-500 uppercase">Phone</label><input className="w-full p-2 border rounded" value={currentItem.data.phone} onChange={(e) => handleFormChange('phone', e.target.value)} /></div>
+                    </div>
+
+                    <div><label className="text-xs font-bold text-gray-500 uppercase">Address</label><textarea className="w-full p-2 border rounded" rows={3} value={currentItem.data.address} onChange={(e) => handleFormChange('address', e.target.value)} /></div>
+
+                    <div className="grid grid-cols-3 gap-4">
+                       <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase flex items-center gap-1">
+                             Pincode {pincodeLoading && <Loader2 size={12} className="animate-spin text-blue-600"/>}
+                          </label>
+                          <input 
+                            className="w-full p-2 border rounded" 
+                            value={currentItem.data.pincode} 
+                            placeholder="6 Digits"
+                            onChange={(e) => handleFormChange('pincode', e.target.value)} 
+                          />
+                       </div>
+                       
+                       <div className="col-span-2">
+                          <label className="text-xs font-bold text-gray-500 uppercase flex items-center gap-1"><MapPin size={12}/> City / District</label>
+                          <input 
+                             className="w-full p-2 border rounded bg-gray-50" 
+                             value={currentItem.data.city} 
+                             onChange={(e) => handleFormChange('city', e.target.value)} 
+                          />
+                       </div>
+                       <div><label className="text-xs font-bold text-gray-500 uppercase">Amount</label><input type="number" className="w-full p-2 border rounded text-green-700 font-bold" value={currentItem.data.amount} onChange={(e) => handleFormChange('amount', e.target.value)} /></div>
+                    </div>
+                  </div>
+
+                  <button onClick={handleSaveAndPrint} className="w-full mt-6 bg-blue-600 text-white py-3 rounded-lg shadow-md flex justify-center items-center gap-2 hover:bg-blue-700">
+                    <Printer size={18} /> Save & Print
+                  </button>
+                </div>
+              </div>
             ) : (
-                <div className="flex flex-col items-center transform group-hover:-translate-y-2 transition-transform">
-                    <div className="bg-blue-100 p-4 rounded-full mb-4 group-hover:bg-blue-200">
-                      <UploadCloud className="h-10 w-10 text-blue-600" />
-                    </div>
-                    <p className="text-xl font-semibold text-gray-700">Click or Drag Screenshot</p>
-                </div>
+              <div className="h-full flex items-center justify-center text-gray-400 bg-gray-50"><p>Select items on the left.</p></div>
             )}
-        </div>
-      )}
-
-      {step === 2 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <div className="bg-gray-100 rounded-xl p-4 border border-gray-200 h-fit">
-                <p className="text-xs font-bold text-gray-500 uppercase mb-3 tracking-wider">Original Screenshot</p>
-                <img src={preview} alt="Upload" className="w-full rounded-lg shadow-sm" />
-            </div>
-
-            <div className="space-y-5">
-                <div className="flex justify-between items-center">
-                  <h3 className="text-lg font-semibold text-gray-800">Verify Details</h3>
-                </div>
-
-                {/* 🟢 RTO GUARD: Warning Banner */}
-                {customerHistory.exists && (
-                  <div className={`p-3 rounded-lg flex items-center gap-3 ${customerHistory.bad_orders > 0 ? 'bg-red-50 border border-red-200 text-red-700' : 'bg-green-50 border border-green-200 text-green-700'}`}>
-                    {customerHistory.bad_orders > 0 ? <AlertTriangle size={20}/> : <UserCheck size={20}/>}
-                    <div>
-                      <p className="font-bold text-sm">{customerHistory.bad_orders > 0 ? "High Risk Customer!" : "Repeat Customer"}</p>
-                      <p className="text-xs">Ordered {customerHistory.total_orders} times. Returned {customerHistory.bad_orders} times.</p>
-                    </div>
-                  </div>
-                )}
-                
-                <div className="space-y-4">
-                  <div>
-                    <label className="text-xs text-gray-500 font-medium ml-1">Items Bought</label>
-                    <input className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" value={formData.items} onChange={e => setFormData({...formData, items: e.target.value})} placeholder="e.g. 1 Red Saree" />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500 font-medium ml-1">Customer Name</label>
-                    <input className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" value={formData.customer_name} onChange={e => setFormData({...formData, customer_name: e.target.value})} />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500 font-medium ml-1">Phone</label>
-                    <input className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" value={formData.phone} onChange={e => {setFormData({...formData, phone: e.target.value}); checkCustomerHistory(e.target.value)}} />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500 font-medium ml-1">Address</label>
-                    <textarea className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" rows={3} value={formData.address} onChange={e => setFormData({...formData, address: e.target.value})} />
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                      <div><label className="text-xs text-gray-500 font-medium ml-1">City</label><input className="w-full p-3 border border-gray-300 rounded-lg" value={formData.city} onChange={e => setFormData({...formData, city: e.target.value})} /></div>
-                      <div><label className="text-xs text-gray-500 font-medium ml-1">Pincode</label><input className="w-full p-3 border border-gray-300 rounded-lg" value={formData.pincode} onChange={e => setFormData({...formData, pincode: e.target.value})} /></div>
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500 font-medium ml-1">Amount (₹)</label>
-                    <input className="w-full p-3 border border-gray-300 rounded-lg font-semibold text-green-700" type="number" value={formData.amount} onChange={e => setFormData({...formData, amount: e.target.value})} />
-                  </div>
-                </div>
-
-                <div className="flex gap-3 pt-4 border-t border-gray-100">
-                    <button onClick={() => setStep(1)} className="w-1/3 px-4 py-3 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 font-medium">Back</button>
-                    <button onClick={handleSaveAndPrint} disabled={loading} className="w-2/3 px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center justify-center gap-2 font-medium shadow-lg">{loading ? <Loader2 className="animate-spin h-5 w-5" /> : <Printer size={20} />} Save & Print Label</button>
-                </div>
-            </div>
-        </div>
-      )}
-
-      {step === 3 && (
-        <div className="text-center py-20 bg-white rounded-2xl border border-gray-100 shadow-sm">
-            <div className="mx-auto h-20 w-20 bg-green-100 rounded-full flex items-center justify-center mb-6">
-              <CheckCircle className="h-10 w-10 text-green-600" />
-            </div>
-            <h2 className="text-3xl font-bold text-gray-900">Success!</h2>
-            <button onClick={resetForm} className="px-8 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-medium shadow-lg hover:shadow-xl transition-all">Create Next Label</button>
-        </div>
-      )}
+          </div>
+      </div>
     </div>
   );
 }
