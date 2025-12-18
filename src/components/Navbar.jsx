@@ -1,6 +1,4 @@
-import { LogOut, Package, PlusCircle } from 'lucide-react';
-import { Settings as SettingsIcon } from 'lucide-react';
-
+import { LogOut, Package, PlusCircle, Settings } from 'lucide-react';
 
 export default function Navbar({ user, setView, handleLogout }) {
   return (
@@ -13,6 +11,7 @@ export default function Navbar({ user, setView, handleLogout }) {
       </div>
       
       <div className="flex items-center gap-4">
+        {/* New Label Button (Isme text hai, toh aria-label zaruri nahi, par accha hai) */}
         <button 
           onClick={() => setView('new-order')}
           className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors text-sm font-medium"
@@ -21,16 +20,25 @@ export default function Navbar({ user, setView, handleLogout }) {
           New Label
         </button>
         
+        {/* 🟢 FIX: Added aria-label for Settings */}
+        <button 
+          onClick={() => setView('settings')} 
+          className="text-gray-500 hover:text-blue-600 transition-colors"
+          title="Settings"
+          aria-label="Go to Settings"
+        >
+          <Settings size={20} />
+        </button>
+        
+        {/* 🟢 FIX: Added aria-label for Logout */}
         <button 
           onClick={handleLogout}
           className="text-gray-500 hover:text-red-600 transition-colors"
           title="Sign Out"
+          aria-label="Sign Out"
         >
           <LogOut size={20} />
         </button>
-        <button onClick={() => setView('settings')} className="text-gray-500 hover:text-blue-600" title="Settings">
-  <SettingsIcon size={20} />
-</button>
       </div>
     </nav>
   );

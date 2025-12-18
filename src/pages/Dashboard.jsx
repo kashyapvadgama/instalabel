@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { generateLabel } from "../lib/pdfGenerator";
-import { LogOut, Package, RefreshCw, Printer, Search, Calendar, TrendingUp, MessageCircle } from "lucide-react";
+import { Package, RefreshCw, Printer, Search, Calendar, TrendingUp, MessageCircle } from "lucide-react";
 
 export default function Dashboard({ session }) {
   const [orders, setOrders] = useState([]);
@@ -27,18 +27,10 @@ export default function Dashboard({ session }) {
   const totalRevenue = orders.reduce((sum, order) => sum + (Number(order.amount) || 0), 0);
   const totalOrders = orders.length;
 
-  // 🟢 WHATSAPP FUNCTION
   const sendWhatsApp = (order) => {
-    // 1. Clean number (remove spaces, dashes)
     let phone = order.phone.replace(/[^0-9]/g, '');
-    
-    // 2. Add Country Code if missing (Assuming India +91)
     if (phone.length === 10) phone = '91' + phone;
-
-    // 3. Create Message
     const text = `Hi ${order.customer_name}! 📦\n\nThanks for your order of ${order.items || "items"}.\nYour parcel is packed and ready to ship!\n\nTotal COD Amount: ₹${order.amount}\n\nThanks, \n${"My Thrift Store"}`;
-    
-    // 4. Open Link
     window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank');
   };
 
@@ -76,7 +68,15 @@ export default function Dashboard({ session }) {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
               <input type="text" placeholder="Search customer..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
-            <button onClick={fetchOrders} className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg transition-colors"><RefreshCw size={20} className={loading ? "animate-spin" : ""} /></button>
+            
+            {/* 🟢 FIX: Added aria-label for Refresh Button */}
+            <button 
+              onClick={fetchOrders} 
+              className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg transition-colors"
+              aria-label="Refresh Orders"
+            >
+              <RefreshCw size={20} className={loading ? "animate-spin" : ""} />
+            </button>
           </div>
         </div>
 
@@ -105,12 +105,27 @@ export default function Dashboard({ session }) {
                     <td className="px-6 py-4 text-gray-500 truncate max-w-[150px]">{order.items || "-"}</td>
                     <td className="px-6 py-4 text-green-600 font-semibold">₹{order.amount}</td>
                     <td className="px-6 py-4 text-right flex justify-end gap-2">
-                      <button onClick={() => sendWhatsApp(order)} className="text-green-600 hover:bg-green-50 p-2 rounded-lg transition-colors" title="Send WhatsApp">
+                      
+                      {/* 🟢 FIX: Added aria-label for WhatsApp */}
+                      <button 
+                        onClick={() => sendWhatsApp(order)} 
+                        className="text-green-600 hover:bg-green-50 p-2 rounded-lg transition-colors" 
+                        title="Send WhatsApp"
+                        aria-label={`Send WhatsApp to ${order.customer_name}`}
+                      >
                         <MessageCircle size={18} />
                       </button>
-                      <button onClick={() => generateLabel(order)} className="text-blue-600 hover:bg-blue-50 p-2 rounded-lg transition-colors" title="Print Label">
+
+                      {/* 🟢 FIX: Added aria-label for Print */}
+                      <button 
+                        onClick={() => generateLabel(order)} 
+                        className="text-blue-600 hover:bg-blue-50 p-2 rounded-lg transition-colors" 
+                        title="Print Label"
+                        aria-label={`Print Label for ${order.customer_name}`}
+                      >
                         <Printer size={18} />
                       </button>
+
                     </td>
                   </tr>
                 ))
