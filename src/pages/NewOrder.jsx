@@ -29,16 +29,25 @@ export default function NewOrder({ session, setView }) {
     };
   }, [queue]);
 
-  const handleBatchUpload = async (e) => {
-    const files = Array.from(e.target.files);
-    if (files.length === 0) return;
-    const newItems = files.map(file => ({
-      id: Math.random().toString(36).substr(2, 9),
-      files: [file], previews: [URL.createObjectURL(file)], status: 'pending', rto_data: null,
-      data: { customer_name: '', phone: '', address: '', city: '', pincode: '', amount: '', items: '' }
-    }));
-    setQueue(prev => [...prev, ...newItems]);
-  };
+    const handleBatchUpload = async (e) => {
+        const files = Array.from(e.target.files);
+        if (files.length === 0) return;
+
+        const newItems = files.map(file => ({
+          id: Math.random().toString(36).substr(2, 9),
+          files: [file],
+          previews: [URL.createObjectURL(file)],
+          status: 'pending', 
+          rto_data: null,
+          data: { customer_name: '', phone: '', address: '', city: '', pincode: '', amount: '', items: '' }
+        }));
+
+        setQueue(prev => [...prev, ...newItems]);
+
+        newItems.forEach(item => {
+          processQueueItem(item);
+        });
+      };
 
   const handleMerge = () => {
     if (selectedIds.length < 2) return;
@@ -176,16 +185,33 @@ export default function NewOrder({ session, setView }) {
                      <img src={item.previews[0]} className="h-12 w-12 object-cover rounded bg-gray-200" alt="Thumbnail" />
                      {item.files.length > 1 && <span className="absolute -bottom-1 -right-1 bg-purple-600 text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full border-2 border-white">{item.files.length}</span>}
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className={`text-sm font-medium truncate ${!item.data.customer_name ? 'text-gray-400 italic' : 'text-gray-900'}`}>{item.data.customer_name || "New Item"}</p>
-                    <div className="flex items-center gap-2 mt-1">
-                        {item.status === 'pending' && <button onClick={(e)=>{e.stopPropagation(); processQueueItem(item)}} className="text-xs bg-gray-200 px-2 py-0.5 rounded text-gray-600">Scan</button>}
-                        {item.status === 'processing' && <span className="text-blue-500 text-xs flex gap-1"><Loader2 size={12} className="animate-spin"/></span>}
-                        {item.status === 'done' && (
-                            item.rto_data ? (item.rto_data.bad > 0 ? <span className="text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded border border-red-200">RISK</span> : <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded border border-green-200">SAFE</span>) : <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">NEW</span>
-                        )}
-                    </div>
-                  </div>
+<div className="flex items-center gap-2 mt-1">
+    {item.status === 'pending' && (
+        <button onClick={(e)=>{e.stopPropagation(); processQueueItem(item)}} className="text-xs bg-gray-200 px-2 py-0.5 rounded text-gray-600 hover:bg-gray-300">Scan</button>
+    )}
+    
+    {item.status === 'processing' && (
+        <span className="text-blue-500 text-xs flex gap-1"><Loader2 size={12} className="animate-spin"/> Scanning...</span>
+    )}
+    
+    {/* 🔴 M-01 FIX: Error UI with Retry Button */}
+    {item.status === 'error' && (
+        <button 
+            onClick={(e) => { e.stopPropagation(); processQueueItem(item); }} 
+            className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded border border-red-200 flex items-center gap-1 hover:bg-red-200"
+        >
+            <AlertTriangle size={10} /> Failed. Retry?
+        </button>
+    )}
+    
+    {item.status === 'done' && (
+        item.rto_data ? (
+            item.rto_data.bad > 0 ? 
+            <span className="text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded border border-red-200">RISK</span> : 
+            <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded border border-green-200">SAFE</span>
+        ) : <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">NEW</span>
+    )}
+</div>
                 </div>
               ))}
             </div>
