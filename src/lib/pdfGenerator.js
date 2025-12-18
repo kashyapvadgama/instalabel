@@ -1,7 +1,7 @@
 import jsPDF from "jspdf";
 
-export const generateLabel = (order) => {
-  // 4x6 inch label (Standard shipping size)
+// 🟢 ACCEPT PROFILE AS 2nd ARGUMENT
+export const generateLabel = (order, profile) => {
   const doc = new jsPDF({
     orientation: "portrait",
     unit: "mm",
@@ -12,30 +12,38 @@ export const generateLabel = (order) => {
   doc.setLineWidth(0.5);
   doc.rect(2, 2, 97.6, 148.4);
 
+  // 🟢 FIX: USE STORE NAME FROM SETTINGS
+  const senderName = profile?.store_name || "INSTALABEL LOGISTICS";
+  const senderAddress = profile?.store_address || "Powered by InstaLabel.in";
+
   // Header (Store Name)
   doc.setFontSize(14);
   doc.setFont("helvetica", "bold");
-  doc.text("INSTALABEL LOGISTICS", 50.8, 10, { align: "center" });
+  doc.text(senderName.toUpperCase(), 50.8, 10, { align: "center" });
   
+  doc.setFontSize(8);
+  doc.setFont("helvetica", "normal");
+  doc.text(senderAddress, 50.8, 15, { align: "center" });
+
   doc.setLineWidth(0.2);
-  doc.line(2, 15, 99.6, 15);
+  doc.line(2, 18, 99.6, 18);
 
   // To Address (Customer)
   doc.setFontSize(10);
   doc.setFont("helvetica", "normal");
-  doc.text("DELIVER TO:", 5, 22);
+  doc.text("DELIVER TO:", 5, 25);
 
   doc.setFontSize(12);
   doc.setFont("helvetica", "bold");
-  doc.text(order.customer_name || "Unknown Name", 5, 28);
+  doc.text(order.customer_name || "Unknown Name", 5, 31);
   
   doc.setFontSize(11);
   doc.setFont("helvetica", "normal");
-  // Text wrapping for address
-  const splitAddress = doc.splitTextToSize(order.address || "", 90);
-  doc.text(splitAddress, 5, 34);
   
-  let currentY = 34 + (splitAddress.length * 5);
+  const splitAddress = doc.splitTextToSize(order.address || "", 90);
+  doc.text(splitAddress, 5, 37);
+  
+  let currentY = 37 + (splitAddress.length * 5);
 
   doc.text(`${order.city || ""} - ${order.pincode || ""}`, 5, currentY);
   currentY += 6;
@@ -57,13 +65,12 @@ export const generateLabel = (order) => {
   doc.setFont("helvetica", "normal");
   doc.text(`Order Date: ${new Date().toLocaleDateString()}`, 5, currentY);
   doc.text("Pre-paid / COD", 95, currentY, { align: "right" });
+  
+  if (order.items) {
+      currentY += 5;
+      doc.text(`Items: ${order.items.substring(0, 50)}`, 5, currentY);
+  }
 
-  // Barcode Placeholder (Simple Box)
-  currentY += 5;
-  doc.rect(10, currentY, 81.6, 20);
-  doc.setFontSize(10);
-  doc.text("TRACKING BARCODE HERE", 50.8, currentY + 12, { align: "center" });
-
-  // Save the PDF
+  // Save
   doc.save(`label_${order.customer_name}_${Date.now()}.pdf`);
 };

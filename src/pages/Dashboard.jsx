@@ -27,12 +27,16 @@ export default function Dashboard({ session }) {
   const totalRevenue = orders.reduce((sum, order) => sum + (Number(order.amount) || 0), 0);
   const totalOrders = orders.length;
 
-  const sendWhatsApp = (order) => {
-    let phone = order.phone.replace(/[^0-9]/g, '');
-    if (phone.length === 10) phone = '91' + phone;
-    const text = `Hi ${order.customer_name}! 📦\n\nThanks for your order of ${order.items || "items"}.\nYour parcel is packed and ready to ship!\n\nTotal COD Amount: ₹${order.amount}\n\nThanks, \n${"My Thrift Store"}`;
-    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank');
-  };
+const sendWhatsApp = (order) => {
+  let phone = order.phone.replace(/[^0-9]/g, ''); 
+  
+  if (phone.length === 10) {
+      phone = '91' + phone;
+  }
+  const text = `Hi ${order.customer_name}! 📦\n\nThanks for your order of ${order.items || "items"}.\nYour parcel is packed and ready to ship!\n\nTotal COD Amount: ₹${order.amount}\n\nThanks for shopping with us!`;
+  
+  window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank');
+};
 
   return (
     <div className="max-w-6xl mx-auto p-6 space-y-8">
