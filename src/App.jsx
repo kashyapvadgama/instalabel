@@ -15,7 +15,6 @@ function App() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      console.log("API Key:", import.meta.env.VITE_GEMINI_API_KEY); // Check if key is loaded
       setSession(session);
       setLoading(false);
     });
