@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { model } from '../lib/geminiClient';
 import { supabase } from '../lib/supabaseClient';
 import { generateLabel } from '../lib/pdfGenerator';
@@ -20,14 +20,23 @@ export default function NewOrder({ session, setView }) {
     fetchProfile();
   }, [session.user.id]);
 
-  // 🟢 2. MEMORY LEAK FIX (Cleanup object URLs)
+  // 🟢 2. CORRECT MEMORY MANAGEMENT (Fixes Broken Images)
+  // We use a Ref to track URLs so they persist while you edit
+  const activeUrls = useRef(new Set());
+
+  // Track new URLs whenever queue updates
+  useEffect(() => {
+    queue.forEach(item => {
+      item.previews.forEach(url => activeUrls.current.add(url));
+    });
+  }, [queue]);
+
+  // Cleanup ONLY when you leave the page (Component Unmount)
   useEffect(() => {
     return () => {
-      queue.forEach(item => {
-        item.previews.forEach(url => URL.revokeObjectURL(url));
-      });
+      activeUrls.current.forEach(url => URL.revokeObjectURL(url));
     };
-  }, [queue]);
+  }, []);
 
   // 3. Handle Batch Upload & Auto-Scan
   const handleBatchUpload = async (e) => {
@@ -45,7 +54,7 @@ export default function NewOrder({ session, setView }) {
 
     setQueue(prev => [...prev, ...newItems]);
 
-    // 🟢 AUTO-SCAN: Trigger AI immediately for new items
+    // Auto-Scan Logic
     newItems.forEach(item => {
       processQueueItem(item);
     });
@@ -68,7 +77,7 @@ export default function NewOrder({ session, setView }) {
     setQueue(prev => [newItem, ...prev.filter(item => !selectedIds.includes(item.id))]);
     setSelectedIds([]);
     setSelectedIndex(0);
-    processQueueItem(newItem); // Auto-scan the new merged item
+    processQueueItem(newItem);
   };
 
   // 5. AI Processing Core
@@ -186,7 +195,6 @@ export default function NewOrder({ session, setView }) {
     setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   };
   
-  // 🟢 6. CRITICAL FIX (C-01): Upload ALL files in a loop
   const handleSaveAndPrint = async () => {
     const currentItem = queue[selectedIndex];
     const formData = currentItem.data;
@@ -197,7 +205,6 @@ export default function NewOrder({ session, setView }) {
     }
     
     try {
-      // Loop through all files to upload them (prevents orphan/missing data on merged orders)
       const uploadedPaths = [];
       for (const file of currentItem.files) {
          const fileName = `${session.user.id}/${Date.now()}_${file.name.replace(/\s/g, '_')}`;
@@ -208,17 +215,15 @@ export default function NewOrder({ session, setView }) {
 
       const { error } = await supabase.from('orders').insert([{ 
           user_id: session.user.id, 
-          screenshot_url: uploadedPaths, // Save Array of paths
+          screenshot_url: uploadedPaths, 
           ...formData, 
           status: 'pending' 
       }]);
       
       if (error) throw error; 
       
-      // Pass Store Profile to PDF Generator for Branding
       generateLabel(formData, storeProfile); 
 
-      // Remove done item
       const newQueue = queue.filter((_, i) => i !== selectedIndex);
       setQueue(newQueue);
       setSelectedIndex(newQueue.length > 0 ? 0 : null);
@@ -232,7 +237,6 @@ export default function NewOrder({ session, setView }) {
 
   return (
     <div className="max-w-7xl mx-auto p-4 lg:p-6 h-[calc(100vh-80px)]">
-      {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <button onClick={() => setView('dashboard')} className="p-2 hover:bg-gray-100 rounded-full text-gray-500" aria-label="Go Back to Dashboard">
@@ -296,7 +300,6 @@ export default function NewOrder({ session, setView }) {
                             <span className="text-blue-500 text-xs flex gap-1"><Loader2 size={12} className="animate-spin"/> Scanning...</span>
                         )}
                         
-                        {/* 🔴 M-01 FIX: Error Visual State */}
                         {item.status === 'error' && (
                             <button 
                                 onClick={(e) => { e.stopPropagation(); processQueueItem(item); }} 
@@ -324,7 +327,6 @@ export default function NewOrder({ session, setView }) {
           <div className="col-span-12 md:col-span-8 lg:col-span-9 bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden flex flex-col">
             {currentItem ? (
               <div className="flex flex-col lg:flex-row h-full">
-                {/* Image Grid */}
                 <div className="lg:w-1/2 bg-gray-100 p-4 overflow-y-auto border-r border-gray-200">
                   <div className="grid grid-cols-1 gap-4">
                     {currentItem.previews.map((src, i) => (
@@ -336,7 +338,6 @@ export default function NewOrder({ session, setView }) {
                   </div>
                 </div>
 
-                {/* Form */}
                 <div className="lg:w-1/2 p-6 overflow-y-auto">
                   {currentItem.rto_data && (
                     <div className={`mb-6 p-3 rounded-lg flex items-center gap-3 ${currentItem.rto_data.bad > 0 ? 'bg-red-50 text-red-700 border-red-200' : 'bg-green-50 text-green-700 border-green-200'}`}>
