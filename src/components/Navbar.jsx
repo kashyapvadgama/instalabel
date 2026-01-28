@@ -8,7 +8,7 @@ export default function Navbar({ user, setView, handleLogout }) {
           <Package size={20} />
         </div>
         {/* Hide text on very small screens to save space */}
-        <span className="font-bold text-lg md:text-xl tracking-tight hidden sm:block">InstaLabel</span>
+        <span className="font-bold text-lg md:text-xl tracking-tight hidden sm:block">InstaDekh</span>
       </div>
       
       <div className="flex items-center gap-2 md:gap-4">
